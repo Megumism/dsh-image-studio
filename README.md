@@ -57,8 +57,8 @@ Two further caveats, because they shape how the plugin behaves:
   not mean the shape is wrong. The plugin surfaces the upstream's own message
   rather than pretending the request was malformed — which is why a generation
   failure here reads `upstream-rejected: database_unavailable`, not "invalid
-  prompt". Raise `preferences.timeoutMs` in the settings page if this relay is
-  routinely exceeding 300s.
+  prompt". The default deadline is 600s for exactly this reason, and every
+  timeout names the deadline it was given, so the failure is self-explaining.
 - **Only shape-level rejections are retried.** `responseFormat: "auto"` tries
   `url` and then `b64_json`, but only when the first attempt was *rejected* (HTTP
   400, a non-JSON body, an empty `data` array). A timeout is not retried in the
@@ -98,9 +98,9 @@ four spec forms, and this package works with the first two out of the box:
 
 | What to paste | Where it resolves |
 |---|---|
-| `github:YOUR_NAME/dsh-image-studio` | GitHub, cloned by pnpm |
+| `github:Megumism/dsh-image-studio` | GitHub, cloned by pnpm |
 | `dsh-image-studio` | the npm registry, once published |
-| `https://github.com/YOUR_NAME/dsh-image-studio` | GitHub (hosted-repository form) |
+| `https://github.com/Megumism/dsh-image-studio` | GitHub (hosted-repository form) |
 | `/absolute/path/to/dsh-image-studio` | a local checkout |
 
 Then **restart the harness**. The loader reads the roster at boot, and the host
@@ -151,19 +151,18 @@ Two independent channels; you can use either or both.
 cd dsh-image-studio
 git init
 git add .
-git commit -m "dsh-image-studio 0.1.0"
+git commit -m "dsh-image-studio 0.2.0"
 git branch -M main
-git remote add origin https://github.com/YOUR_NAME/dsh-image-studio.git
+git remote add origin https://github.com/Megumism/dsh-image-studio.git
 git push -u origin main
 
-# tag a release so people can pin one: github:YOUR_NAME/dsh-image-studio#v0.1.0
-git tag v0.1.0
-git push origin v0.1.0
+# tag a release so people can pin one: github:Megumism/dsh-image-studio#v0.2.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-Before pushing, replace every `YOUR_NAME` in `package.json` and this file, and put
-your name in `LICENSE`. The `.gitignore` already excludes `node_modules/` and
-generated `*.png`, so a test image cannot leak into the repo.
+The `.gitignore` already excludes `node_modules/` and generated `*.png`, so a
+test image cannot leak into the repo.
 
 ### npm (makes the name discoverable in the market)
 
@@ -206,18 +205,46 @@ is the whole integration.
 
 Tool behaviour worth knowing:
 
-- **Arguments.** `prompt` (required), plus optional `model`, `size`, and
-  `count` (1–4). Anything omitted falls back to the configured preferences.
-- **The images live in the attachment store**, not in the plugin's directory, so
-  they are durable and deduplicated by the harness like every other image. The
-  model receives them as content and does not need a URL.
+- **Arguments.** `prompt` (required), plus optional `model`, `size`, `count`
+  (1–4), and `path`. Anything omitted falls back to the configured preferences.
+  `model` is optional on purpose: a single-channel deployment should not need a
+  model-picking round trip before every picture.
+- **Every image is written to a file, and the tool returns the absolute path.**
+  This is the difference between a picture you can only *look at* and one a later
+  step can *use* — read it, edit it, embed it in a document, move it. The
+  attachment store is what makes it render in the transcript; the file is what
+  makes it a deliverable. `path` names the destination (an absolute path, or a
+  bare name placed in the configured directory), and `preferences.outputDir`
+  redirects the whole thing into a workspace.
+- **The result carries diagnostics**: `attempts`, `elapsedMs`, `format`, and
+  `timeoutMs`. Without them a three-minute success and a dead gateway look
+  identical, and the difference decides whether to wait, retry, or reword.
+- **Failures are classified, not just described.** Every failure carries an
+  `action` — `retry`, `rephrase`, `configure`, or `none` — and the model-visible
+  message is tagged with it (e.g. `[rephrase] ...`). The classes need opposite
+  responses, and the gateway's own wording does not distinguish them: a content
+  refusal and a malformed request are both an ordinary HTTP 400.
+- **The images also live in the attachment store**, so they are durable and
+  deduplicated by the harness like every other image; the model receives them as
+  content and does not need a URL.
 - **On a text-only model route** the harness replaces each image block with a
   placeholder, so a text-only conversation degrades instead of failing.
-- **Failure messages come from the upstream verbatim.** A relay that is being
+- **Failure messages preserve the upstream's wording.** A relay that is being
   rate-limited surfaces as its own words, not as a generic "generation failed".
 - **Degraded mode.** Without an attachment service the tool still works: it
-  stores the images under the plugin's data directory and hands the model a
-  served URL instead of image blocks.
+  writes the images and hands the model a served URL instead of image blocks.
+
+### On automatically rewording a refusal
+
+A refusal on content grounds is reported as `rephrase`, which tells the caller
+that different wording is the only thing that can help. The plugin stops there
+and does **not** silently rewrite the prompt and retry.
+
+That is deliberate. Rewording a refused request until a safety filter stops
+objecting is not the plugin's decision to make, and a tool that did it silently
+would be a moderation bypass with an extra step. Surfacing the class, so the
+model or the person can decide what to actually ask for, is the honest half of
+that feature.
 
 ### Why the tool also needs a client view
 
@@ -284,8 +311,9 @@ in your harness is written.
 | `preferences.defaultModel` | first model on the channel | Model a generation uses |
 | `preferences.size` | `1024x1024` | Sent only when non-empty and not `auto` |
 | `preferences.count` | `1` | 1–4; satisfied by parallel single-image requests |
-| `preferences.timeoutMs` | `300000` | Upstream deadline |
+| `preferences.timeoutMs` | `600000` | Upstream deadline. Raised from 300s because a normal generation on the measured relay took 148–414s, and a deadline that cuts off successful work is worse than a slow failure |
 | `preferences.allowRemote` | `false` | Whether non-loopback callers may use the HTTP surface |
+| `preferences.outputDir` | `''` | Where generated files are written. Empty means the plugin's own `images/`; an absolute path can point into a workspace so other tools can pick the files up |
 
 Per channel: `name`, `baseUrl`, `apiKey`, `apiKeyEnv`, `models[]`,
 `responseFormat` (`url` \| `b64_json` \| `auto`; `auto` tries `url` first).

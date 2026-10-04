@@ -1,6 +1,6 @@
 {
   "name": "dsh-image-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Image generation for the DeepSeek Harness: a model-facing generate_image tool that renders pictures in the conversation, plus a mobile-first settings page for OpenAI-compatible channels. No build step, no runtime dependencies.",
   "type": "module",
   "main": "lib/index.js",
@@ -27,11 +27,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_NAME/dsh-image-studio.git"
+    "url": "git+https://github.com/Megumism/dsh-image-studio.git"
   },
-  "homepage": "https://github.com/YOUR_NAME/dsh-image-studio#readme",
+  "homepage": "https://github.com/Megumism/dsh-image-studio#readme",
   "bugs": {
-    "url": "https://github.com/YOUR_NAME/dsh-image-studio/issues"
+    "url": "https://github.com/Megumism/dsh-image-studio/issues"
   },
   "dsh": {
     "bundle": {

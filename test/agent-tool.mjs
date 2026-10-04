@@ -9,9 +9,9 @@
  * Usage: node test/agent-tool.mjs
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 import { buildAgentTool, TOOL_NAME } from '../lib/host/agent-tool.js'
 import { normalizeConfig } from '../lib/host/store.js'
@@ -122,13 +122,87 @@ check('the first block is the image', blocks[0]?.type === 'image' && blocks[0]?.
 check('a text block summarises the call', blocks.at(-1)?.type === 'text' && /Generated 1 image/.test(blocks.at(-1).text), JSON.stringify(blocks.at(-1)))
 check('every image becomes a block', blocks.filter((block) => block.type === 'image').length === 1)
 
+// ---- the file path, diagnostics and error classes ---------------------------
+// These are the four things a caller cannot work around when they are missing:
+// where the file is, how long it took, how many tries, and whether retrying
+// could possibly help.
+console.log('\ndiagnostics and file paths')
+check('the value reports an absolute file path', typeof value.images[0]?.path === 'string' && isAbsolute(value.images[0].path), JSON.stringify(value.images[0]?.path))
+check('the reported file actually exists', existsSync(value.images[0].path), value.images[0]?.path)
+check('the reported file is real PNG bytes', readFileSync(value.images[0].path).subarray(0, 4).toString('hex') === '89504e47')
+check('it reports the attempt count', value.attempts === 1, String(value.attempts))
+check('it reports elapsed time', Number.isInteger(value.elapsedMs) && value.elapsedMs >= 0, String(value.elapsedMs))
+check('it reports the response format used', value.format === 'url', String(value.format))
+check('it reports the deadline it was given', value.timeoutMs === 60_000, String(value.timeoutMs))
+check('the rendered text carries the path', blocks.at(-1).text.includes(value.images[0].path), blocks.at(-1).text)
+
+// An explicit destination is what makes the tool usable in a pipeline.
+const explicit = await tool.execute({ prompt: 'a red apple', path: join(dataRoot, 'chosen', 'apple.png') }, {})
+check('an absolute path argument is honoured', explicit.images[0].path === join(dataRoot, 'chosen', 'apple.png'), String(explicit.images[0].path))
+check('the chosen directory is created and the file written', existsSync(join(dataRoot, 'chosen', 'apple.png')))
+const named = await tool.execute({ prompt: 'a red apple', path: 'just-a-name.png' }, {})
+check('a bare name lands in the configured directory', named.images[0].path === join(dataRoot, 'images', 'just-a-name.png'), String(named.images[0].path))
+
+// A configured output directory is what lets another tool find the picture.
+const elsewhere = normalizeConfig({ ...configured, preferences: { ...configured.preferences, outputDir: join(dataRoot, 'outbox') } })
+const toOutbox = await buildAgentTool(serviceFor(elsewhere), attachments).execute({ prompt: 'a red apple' }, {})
+check('preferences.outputDir redirects the write', toOutbox.images[0].path.startsWith(join(dataRoot, 'outbox')), String(toOutbox.images[0].path))
+check('the redirected file exists', existsSync(toOutbox.images[0].path))
+
+console.log('\nerror classification')
+const healthyFetch = globalThis.fetch
+const classify = async (channel, prompt, timeoutMs) => {
+  const failing = normalizeConfig({ ...configured, channels: [channel], preferences: { ...configured.preferences, timeoutMs } })
+  try {
+    await buildAgentTool(serviceFor(failing), attachments).execute({ prompt }, {})
+    return { action: 'none', message: '' }
+  } catch (error) {
+    return { action: error.action, message: error.message }
+  }
+}
+
+// A gateway fault carries a status that says "try again".
+const stubChannel = { id: 'c1', name: 'gpt-img', baseUrl: 'https://relay.example/v1', apiKey: 'sk-test', models: ['gpt-image-2'], responseFormat: 'url' }
+globalThis.fetch = async (url) => (String(url).includes('/images/generations')
+  ? new Response(JSON.stringify({ error: { message: 'upstream request failed' } }), { status: 502, headers: { 'content-type': 'application/json' } })
+  : new Response('nope', { status: 404 }))
+const transient = await classify(stubChannel, 'x', 60_000)
+check('a 502 is classified as retry', transient.action === 'retry', JSON.stringify(transient))
+
+// A content refusal is also a 400, exactly like a malformed request — the
+// status carries no signal, so only the wording distinguishes them.
+globalThis.fetch = async (url) => {
+  const target = String(url)
+  if (target.includes('/images/generations')) {
+    return new Response(JSON.stringify({ error: { message: 'your request was rejected as a result of our safety system' } }), { status: 400, headers: { 'content-type': 'application/json' } })
+  }
+  return new Response('nope', { status: 404 })
+}
+const refused = await classify(stubChannel, 'x', 60_000)
+check('a content refusal is classified as rephrase', refused.action === 'rephrase', JSON.stringify(refused))
+check('the refusal message is tagged with its action', refused.message.startsWith('[rephrase]'), refused.message)
+
+await (async () => {
+  const noKey = normalizeConfig({ channels: [{ id: 'c1', name: 'gpt-img', baseUrl: 'https://relay.example/v1', apiKey: '', models: ['gpt-image-2'] }], defaultChannelId: 'c1' })
+  try {
+    await buildAgentTool(serviceFor(noKey), attachments).execute({ prompt: 'x' }, {})
+    check('a missing key is classified as configure', false, 'no error thrown')
+  } catch (error) {
+    check('a missing key is classified as configure', error.action === 'configure' || error.code === 'missing-key', JSON.stringify({ code: error.code, action: error.action }))
+  }
+})()
+
 // ---- the degraded path ------------------------------------------------------
 console.log('\nexecute without an attachment store')
+// Restore the healthy upstream: the classification block above replaced fetch
+// with a refusal stub, and the degraded path still needs a working gateway.
+globalThis.fetch = healthyFetch
 const bare = buildAgentTool(serviceFor(configured), undefined)
 const fallback = await bare.execute({ prompt: 'a red apple' }, {})
 check('it still succeeds', fallback.images.length === 0 && fallback.urls.length === 1, JSON.stringify(fallback))
 check('it reports a served URL', fallback.urls[0].startsWith('/api/dsh-image-studio/image/'), fallback.urls[0])
 check('the file really exists on disk', existsSync(join(dataRoot, 'images', decodeURIComponent(fallback.urls[0].split('/').at(-1)))))
+check('it still reports diagnostics', fallback.attempts === 1 && fallback.format === 'url', JSON.stringify({ attempts: fallback.attempts, format: fallback.format }))
 const fallbackBlocks = bare.output.render({}, fallback)
 check('the rendered text mentions the URL', fallbackBlocks.at(-1).text.includes('/api/dsh-image-studio/image/'), fallbackBlocks.at(-1).text)
 check('no image blocks are claimed without attachments', fallbackBlocks.every((block) => block.type !== 'image'))
