@@ -1,0 +1,11 @@
+# Nothing here is needed to run the plugin: lib/ is the shipped artifact and the
+# client bundle is hand-written, so there is no build output to track.
+node_modules/
+*.log
+
+# Local install leftovers (scripts/install.mjs links rather than copies).
+*.before-image-studio
+
+# Anything generated while testing, so a fork does not ship someone's pictures.
+*.png
+!docs/**/*.png

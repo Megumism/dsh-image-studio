@@ -1,0 +1,14 @@
+# Bundle patch for dsh-image-studio.
+#
+# Applied when this package is installed as a profile bundle. It inserts the
+# loader row that mounts the host half into the profile roster; the `dsh.client`
+# declaration in package.json is what makes the browser half load in the GUI.
+#
+# `insert` (rather than a bare row) is required: a top-level patch entry without
+# `insert` targets an EXISTING row by id to override or disable it, so a bare
+# entry would silently do nothing for a plugin the roster has never seen.
+- insert:
+    - id: image-studio
+      name: dsh-image-studio
+      config:
+        enabled: true
